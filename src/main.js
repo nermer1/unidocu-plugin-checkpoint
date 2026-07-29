@@ -1,5 +1,5 @@
 /**
- * @namespace savaLode
+ * @namespace checkpoint
  * @version 1.0.0
  *
  * 설명:
@@ -11,14 +11,27 @@
  */
 const config = {
     version: '1.0.0',
-    name: 'manualSaveLoad',
-    description: 'unidocu5 plugin',
+    name: 'checkpoint',
+    description: 'unidocu5 plugin checkpoint',
     extraModules: []
 };
 let $plugin;
 
 $u.plugins.addPlugin(config.name, {
     config: config,
+    uiExtensions: {
+        floatingActions: [
+            {
+                icon: 'fa fa-save',
+                label: '저장 데이터',
+                onClick: () => {
+                    if (typeof $plugin.openDialog === 'function') {
+                        $plugin.openDialog();
+                    }
+                }
+            }
+        ]
+    },
     init: (pluginHandlers) => {
         $plugin.addCustomHook(pluginHandlers);
     }
@@ -148,6 +161,65 @@ $plugin = {
             }
         };
     },
+    openDialog: () => {
+        const gridId = 'save-dialog-grid';
+        const saveData = $plugin.localStorage();
+
+        const buttons = [
+            $u.baseDialog.getButton(
+                '저장',
+                () => {
+                    saveData.set().then(setLoadData);
+                },
+                'unidocu-button blue'
+            ),
+            $u.baseDialog.getButton('저장 데이터 삭제', () => {
+                const selectedData = gridObj.getSELECTEDJSONData();
+                saveData.clear(selectedData).then(setLoadData);
+            })
+        ];
+        const instance = customDialog.getInstance();
+        instance.init({
+            title: '안녕',
+            buttons: buttons,
+            textAlign: 'center',
+            width: '700',
+            draggable: true,
+            resizable: true
+        });
+        const $dialog = instance.open();
+        $dialog.append(
+            '<div style="font-size:12px; color: red; text-align: left;">해당 기능은 ADMIN만 가능, 예산 조회 가능한 화면만 적용, 불러올 때 이벤트 등은 미적용</br>단축키 F2: 빠른 저장, F4: 빠른 불러오기</div>'
+        );
+        $dialog.append(`<div id=${gridId} class="unidocu-grid" data-sub-group=${gridId} data-sub-id="GRIDHEADER" style="height: 170px;"></div>`);
+        $u.renderUIComponents($dialog);
+
+        const gridObj = $u.gridWrapper.getGrid(gridId);
+        setLoadData();
+
+        gridObj.onCellClick((columnKey, rowIndex) => {
+            if (columnKey === 'capture_key') {
+                unidocuConfirm('덮어씌울까요?', async () => {
+                    const allData = await saveData.get();
+                    const selectedKey = gridObj.$V(columnKey, rowIndex);
+                    const targetItem = allData.find((item) => item[columnKey] === selectedKey);
+
+                    if (targetItem) {
+                        const {os_data, ot_data} = targetItem;
+                        $u.setValues(os_data);
+                        $u.gridWrapper.getGrid().setJSONData(ot_data);
+                        $dialog.dialog('close');
+                    }
+                });
+            }
+        });
+
+        function setLoadData() {
+            saveData.get().then((ot_data) => {
+                gridObj.setJSONData(ot_data);
+            });
+        }
+    },
     initSaveLoadEvents: () => {
         const gridId = 'save-dialog-grid';
         const saveData = $plugin.localStorage();
@@ -187,7 +259,7 @@ $plugin = {
                 TEXT: '저장 데이터',
                 COLOR: 'blue'
             });
-            btn.on('click', dialog);
+            btn.on('click', $plugin.openDialog);
             $('.unidocu-panel-ctrls').first().prepend(btn);
             //$('body').find('.page_title').append(btn);
         }
@@ -197,65 +269,8 @@ $plugin = {
             document.addEventListener('keyup', $plugin._keyHandler);
         }
 
-        function dialog() {
-            const buttons = [
-                $u.baseDialog.getButton(
-                    '저장',
-                    () => {
-                        saveData.set().then(setLoadData);
-                    },
-                    'unidocu-button blue'
-                ),
-                $u.baseDialog.getButton('저장 데이터 삭제', () => {
-                    const selectedData = gridObj.getSELECTEDJSONData();
-                    saveData.clear(selectedData).then(setLoadData);
-                })
-            ];
-            const instance = customDialog.getInstance();
-            instance.init({
-                title: '안녕',
-                buttons: buttons,
-                textAlign: 'center',
-                width: '700',
-                draggable: true,
-                resizable: true
-            });
-            const $dialog = instance.open();
-            $dialog.append(
-                '<div style="font-size:12px; color: red; text-align: left;">해당 기능은 ADMIN만 가능, 예산 조회 가능한 화면만 적용, 불러올 때 이벤트 등은 미적용</br>단축키 F2: 빠른 저장, F4: 빠른 불러오기</div>'
-            );
-            $dialog.append(`<div id=${gridId} class="unidocu-grid" data-sub-group=${gridId} data-sub-id="GRIDHEADER" style="height: 170px;"></div>`);
-            $u.renderUIComponents($dialog);
-
-            const gridObj = $u.gridWrapper.getGrid(gridId);
-            setLoadData();
-
-            gridObj.onCellClick((columnKey, rowIndex) => {
-                if (columnKey === 'capture_key') {
-                    unidocuConfirm('덮어씌울까요?', async () => {
-                        const allData = await saveData.get();
-                        const selectedKey = gridObj.$V(columnKey, rowIndex);
-                        const targetItem = allData.find((item) => item[columnKey] === selectedKey);
-
-                        if (targetItem) {
-                            const {os_data, ot_data} = targetItem;
-                            $u.setValues(os_data);
-                            $u.gridWrapper.getGrid().setJSONData(ot_data);
-                            $dialog.dialog('close');
-                        }
-                    });
-                }
-            });
-
-            function setLoadData() {
-                saveData.get().then((ot_data) => {
-                    gridObj.setJSONData(ot_data);
-                });
-            }
-        }
-
         // 매 렌더링 시 버튼 존재 여부를 확인하고 추가
-        addButtonAndEventListener();
+        //addButtonAndEventListener();
 
         // 최초 1회만 초기화할 로직 (웹데이터, 단축키)
         if (!$plugin._isSaveLoadOneTimeInit) {
