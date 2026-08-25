@@ -23,8 +23,12 @@ const DEFAULT_EXCLUDE_FORM_AREA_IDS = ['search-condition'];
 //   - before: change가 DOM을 재구성하는 필드 → change 먼저 태우고 값 재적용 (예: PAYGB — 테이블 갈아엎음)
 //   - after : 일반 필드 → 값 세팅 후 change (기본)
 const DEFAULT_CHANGE_TRIGGER_FIELDS = {
-    UD_0204_100: {before: ['PAYGB', 'EVIKB'], after: []}
+    UD_0204_100: {before: ['PAYGB'], after: []}
 };
+// 저장을 선택 레코드 단위로 분리하기 위한 기본 컨텍스트 키 후보 (page 파라미터에서 있는 것 하나 사용).
+// 동일 프로그램ID라도 선택(CRD_SEQ/INV_SEQ)이 다르면 저장이 섞이지 않도록 스코프를 좁힘.
+// config의 contextParamKeys[pid]로 커스텀 유니크키 추가 가능. 아무 것도 없으면 program_id 단위(지금과 동일).
+const DEFAULT_CONTEXT_PARAM_KEYS = ['CRD_SEQ', 'INV_SEQ'];
 let $plugin;
 
 $u.plugins.addPlugin(config.name, {
@@ -117,6 +121,20 @@ $plugin = {
             before: Array.from(new Set(d.before.concat(c.before))),
             after: Array.from(new Set(d.after.concat(c.after)))
         };
+    },
+    // 저장 스코프를 좁힐 컨텍스트 키 (page 파라미터의 CRD_SEQ/INV_SEQ 등 유니크값). 없으면 '' → program_id 단위
+    getContextKey: () => {
+        try {
+            const pid = $u.page.getPROGRAM_ID();
+            const cfgKeys = (($u.plugins.getOptions('checkpoint') || {}).contextParamKeys || {})[pid] || [];
+            const candidates = cfgKeys.concat(DEFAULT_CONTEXT_PARAM_KEYS); // config 우선 + 기본 후보
+            const params = ($u.page.getPageParams && $u.page.getPageParams()) || {};
+            for (let i = 0; i < candidates.length; i++) {
+                const k = candidates[i];
+                if (params[k] != null && params[k] !== '') return k + ':' + String(params[k]);
+            }
+        } catch (e) {}
+        return '';
     },
     // 저장/로드 대상 화면인지 판별
     // 우선순위: forceDisable > forceEnable > 팝업 > 자동판별(그리드/폼)
@@ -229,7 +247,32 @@ $plugin = {
     // 실제 복구 본문 (폼 + 다중 그리드; 레거시 단일 ot_data 폴백)
     _restoreCaptureNow: (item) => {
         if (!item) return;
+        const os_data = item.os_data || {};
+        const hasOs = Object.keys(os_data).length > 0;
+        const {before, after} = $plugin.getChangeTriggerFields($u.page.getPROGRAM_ID());
 
+        $plugin._restoreGrids(item); // ① 그리드 복구 (change가 참조하는 그리드의 선택 등 확보)
+
+        if (hasOs && before.length > 0) {
+            // before(PAYGB류)는 change 시 폼 테이블/그리드를 초기화하므로:
+            // 값 세팅 → before change → (재구성 후) 폼 재적용 + 그리드 2회 복구 + after
+            // (그리드 복구는 멱등이라 ①에서 참조용, 여기서 리셋된 것 재복구 — pre/post 구분 불필요)
+            $u.setValues(os_data);
+            $u.plugins.tools.triggerFieldChanges(before);
+            setTimeout(() => {
+                $u.setValues(os_data); // 재구성된 폼에 값 재적용
+                $plugin._restoreGrids(item); // ② before change가 초기화한 그리드 재복구
+                if (after.length > 0) $u.plugins.tools.triggerFieldChanges(after);
+            }, 500);
+        } else {
+            if (hasOs) $u.setValues(os_data);
+            if (after.length > 0) $u.plugins.tools.triggerFieldChanges(after);
+        }
+
+        $plugin._restoreAttach(item);
+    },
+    // 저장된 그리드 데이터를 화면 그리드에 복구 (멱등 — 여러 번 호출해도 안전)
+    _restoreGrids: (item) => {
         const grids = item.grids;
         const treeParams = item.treeParams || {};
         if (grids && Object.keys(grids).length > 0) {
@@ -245,6 +288,9 @@ $plugin = {
                     if (gridObj.rg.tree.isTreeMode() && tp) {
                         // 트리: 저장 파라미터로 setTreeData 재호출 → raw 데이터로 _H 재생성되어 계층 복원
                         gridObj.setTreeData(tp.treeColumn, ot_data, tp.parentKey, tp.currentKey, tp.rootValue);
+                        gridObj.setSortEnable(false);
+                        gridObj.enableTreeClickEvent(false);
+                        gridObj.expandAll();
                         // setTreeData 내부 checkItem이 flat 인덱스라 엉뚱한 행을 체크함
                         // → 전체 해제 후, data row id 기준으로 정확히 재체크 (중복 체크 방지)
                         const dp = gridObj._rg.gridView.getDataProvider();
@@ -270,28 +316,19 @@ $plugin = {
                 if (gridObj) gridObj.setJSONData(item.ot_data);
             } catch (e) {}
         }
-
-        const os_data = item.os_data || {};
-        if (Object.keys(os_data).length > 0) {
-            $u.setValues(os_data);
-            const {before, after} = $plugin.getChangeTriggerFields($u.page.getPROGRAM_ID());
-            if (before.length > 0) {
-                $u.plugins.tools.triggerFieldChanges(before); // DOM 재구성류 change 먼저
-                $u.setValues(os_data); // 재구성된 DOM에 값 재적용
-            }
-            if (after.length > 0) $u.plugins.tools.triggerFieldChanges(after);
-        }
-
-        // 첨부 그룹키 복구 (저장돼 있고 업로더가 있으면 재설정)
-        if (item.attach) {
-            try {
-                const uploader = $u.fileUI && $u.fileUI.getFineUploader && $u.fileUI.getFineUploader();
-                if (uploader) uploader.setFileGroupId(item.attach);
-            } catch (e) {}
-        }
+    },
+    // 첨부 그룹키 복구 (저장돼 있고 업로더가 있으면 재설정)
+    _restoreAttach: (item) => {
+        if (!item.attach) return;
+        try {
+            const uploader = $u.fileUI && $u.fileUI.getFineUploader && $u.fileUI.getFineUploader();
+            if (uploader) uploader.setFileGroupId(item.attach);
+        } catch (e) {}
     },
     localStorage: () => {
         const programId = $u.page.getPROGRAM_ID();
+        const ctx = $plugin.getContextKey(); // '' 또는 'CRD_SEQ:123' — 선택 레코드 단위 스코프
+        const autoKey = programId + '_auto' + (ctx ? '__' + ctx : ''); // context별 auto 슬롯 분리
         let _db = null;
 
         const getDB = async () => {
@@ -303,18 +340,18 @@ $plugin = {
             get: async () => {
                 const db = await getDB();
                 const all = await db.getAll();
-                const autoKey = programId + '_auto';
-                const manualPrefix = programId + '_manual_';
-                // 현재 program 소속만 노출 — program_id 필드 우선, 레거시(필드 없는 기존 저장)는 구분자 안전 키 매칭으로 폴백
-                const items = all.filter(
-                    (item) => (item.data && item.data.program_id === programId) || item.key === autoKey || item.key.indexOf(manualPrefix) === 0
-                );
-                return items.map((item) => {
-                    const isAuto = item.key === autoKey;
+                // program_id + context_key 일치만 노출 (context_key 없는 레거시는 '' 취급 → program 단위 화면과 호환)
+                const items = all.filter((item) => {
                     const d = item.data || {};
+                    return d.program_id === programId && (d.context_key || '') === ctx;
+                });
+                return items.map((item) => {
+                    const d = item.data || {};
+                    const isAuto = d.type === 'auto';
                     return {
                         capture_key: item.key,
                         capture_type_name: isAuto ? '[자동 임시저장]' : '[수동 저장]',
+                        type: d.type,
                         capture_time: d.capture_time,
                         os_data: d.os_data,
                         grids: d.grids || {},
@@ -325,7 +362,7 @@ $plugin = {
                 });
             },
             set: async (type = 'manual', pre) => {
-                const capture_key = type === 'auto' ? programId + '_auto' : programId + '_' + type + '_' + new Date().getTime();
+                const capture_key = type === 'auto' ? autoKey : programId + '_manual_' + new Date().getTime();
                 const capture_time = $plugin.util.getDatetoString();
                 // pre가 있으면 미리 수집한 데이터 재사용 (onSystemError에서 유무 판단 시 이미 수집한 것 등)
                 const os_data = pre ? pre.os_data : $u.getValues() || {};
@@ -337,6 +374,7 @@ $plugin = {
                 const db = await getDB();
                 return db.save(capture_key, {
                     program_id: programId, // 프로그램별 스코핑용 (get에서 정확 매칭)
+                    context_key: ctx, // 선택 레코드 스코프 (CRD_SEQ/INV_SEQ 등, 없으면 '')
                     type,
                     capture_time,
                     os_data,
@@ -501,7 +539,7 @@ $plugin.addCustomHook = (pluginHandlers) => {
 
         const saveData = $plugin.localStorage();
         saveData.get().then((data) => {
-            const autoSaveDataList = data.filter((item) => item.capture_key === pid + '_auto');
+            const autoSaveDataList = data.filter((item) => item.type === 'auto'); // get()이 이미 context 스코프로 필터함
             if (autoSaveDataList.length === 0) {
                 // auto 없음 → 이 pid 마킹 해제 (이후 에러로 auto가 생기면 재렌더/재진입 시 다시 프롬프트)
                 if ($plugin._autoPromptProgramId === pid) $plugin._autoPromptProgramId = null;
