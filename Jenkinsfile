@@ -28,14 +28,14 @@ pipeline {
                 sh 'npm run build'         // webpack → dist/plugin.js
             }
         }
-        stage('Package & Deploy to NAS') {
+        stage('Deploy to NAS') {
             steps {
-                // zip 대신 jar(=zip 포맷, JDK 기본 제공)로 패키징. cfM = 매니페스트 없이 plugin.js 만
+                // 통짜 플러그인: <NAS>/<id>/plugin.js 로 그대로 배포 (마켓이 그대로 서빙)
                 sh '''
-                    mkdir -p "${NAS_DIR}"
-                    cd dist && jar cfM "../${PLUGIN_ID}-${VERSION}.zip" plugin.js && cd ..
-                    cp "${PLUGIN_ID}-${VERSION}.zip" "${NAS_DIR}/"
-                    echo "배포 완료: ${NAS_DIR}/${PLUGIN_ID}-${VERSION}.zip"
+                    DEST="${NAS_DIR}/${PLUGIN_ID}"
+                    mkdir -p "${DEST}"
+                    cp dist/plugin.js "${DEST}/plugin.js"
+                    echo "배포 완료: ${DEST}/plugin.js"
                 '''
             }
         }
