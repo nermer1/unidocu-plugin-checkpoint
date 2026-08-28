@@ -30,9 +30,10 @@ pipeline {
         }
         stage('Deploy to NAS') {
             steps {
-                // 통짜 플러그인: <NAS>/<id>/plugin.js 로 그대로 배포 (마켓이 그대로 서빙)
+                // 통짜 플러그인: <NAS>/<id>/<version>/plugin.js 로 버전별 누적 배포 (덮어쓰기 X)
                 sh '''
-                    DEST="${NAS_DIR}/${PLUGIN_ID}"
+                    VER=$(node -p "require('./package.json').version")
+                    DEST="${NAS_DIR}/${PLUGIN_ID}/${VER}"
                     mkdir -p "${DEST}"
                     cp dist/plugin.js "${DEST}/plugin.js"
                     echo "배포 완료: ${DEST}/plugin.js"
