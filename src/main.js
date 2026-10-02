@@ -137,9 +137,9 @@ $plugin = {
         return '';
     },
     // 저장/로드 대상 화면인지 판별
-    // 우선순위: forceDisable > forceEnable > 팝업 > 자동판별(그리드/폼)
+    // 우선순위: 디버그뷰 > forceDisable > forceEnable > 팝업 > 자동판별(그리드/폼)
     isSaveTargetScreen: () => {
-        const tools = $u.plugins.tools;
+        if (location.pathname === '/debug/view') return false; // 디버그 뷰 화면은 저장대상 아님 (코어와 동일 판정)
         const opt = $plugin.getScreenOptions();
         const pid = $u.page.getPROGRAM_ID();
 
@@ -159,7 +159,7 @@ $plugin = {
         const gridEditable = $grids.toArray().some((el) => {
             if ($(el).data('subGroup') !== pid) return false; // 이 프로그램 소속 그리드만 (팝업/다이얼로그 제외)
             const gridObj = $u.gridWrapper.getGrid(el.id);
-            return gridObj ? tools.isGridEditable(gridObj) : false;
+            return gridObj ? $plugin.isGridTrulyEditable(gridObj) : false;
         });
         if (gridEditable) return true;
 
@@ -173,6 +173,23 @@ $plugin = {
                 return field && !field.isReadOnly();
             });
         });
+    },
+    // 그리드가 '실제로 편집 가능한지' 판별 (보이는 edit 컬럼이 하나라도 있나)
+    // 디버그 모드가 숨김 컬럼을 강제 노출시켜도(__debugOriginGridHeaders 백업) 원본 가시성 기준으로 판정.
+    // 어댑터 tools.isGridEditable 은 런타임 isColumnHide 만 봐서 디버그 ON 시 숨김 edit 컬럼을 오탐함.
+    isGridTrulyEditable: (gridObj) => {
+        const origin = gridObj.__debugOriginGridHeaders; // 디버그 ON이면 원본(디버그 전) 가시성 백업 존재
+        const originMap = {};
+        if (origin)
+            origin.forEach((h) => {
+                originMap[h.name] = h;
+            });
+        const isHidden = (key) => {
+            const o = originMap[key];
+            if (o) return !o.visible || Number(o.width) === 0; // 디버그 ON: 원본 가시성/폭 기준
+            return gridObj.rg.style.isColumnHide(key); // 평상시: 런타임 기준
+        };
+        return (gridObj.getGridHeaders() || []).some((col) => col.key !== 'SELECTED' && col.edit === true && !isHidden(col.key));
     },
     // 화면의 모든 그리드 데이터를 { subId: json } 으로 수집
     // 키는 안정 식별자인 subId(예: GRIDHEADER). DOM id(unidocu-grid 등)는 렌더 순서로 바뀌므로 사용 안 함.
